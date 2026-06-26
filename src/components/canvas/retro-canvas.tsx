@@ -9,8 +9,13 @@ import {
   type Viewport,
   colorBorder,
   clampZoom,
-  initials,
 } from '@/lib/canvas/types'
+import { useBoardRealtime } from '@/lib/realtime/use-board-realtime'
+import type { BoardSyncEvent, PresenceUser } from '@/lib/realtime/types'
+import { userColor } from '@/lib/realtime/colors'
+import { PresenceBar } from '@/components/realtime/presence-bar'
+import { RemoteCursors } from '@/components/realtime/remote-cursors'
+import { ActivityFeed } from '@/components/realtime/activity-feed'
 import { CanvasElement, type ResizeHandle } from './canvas-element'
 import { CanvasToolbar } from './canvas-toolbar'
 import { ElementToolbar } from './element-toolbar'
@@ -124,12 +129,91 @@ export function RetroCanvas({ teamId, initialElements, members }: Props) {
     }
   }, [teamId, editingId])
 
+  // Realtime is the primary sync path; this slow poll is a reconnect/safety net.
   useEffect(() => {
     const id = setInterval(() => {
       void refresh()
-    }, 3000)
+    }, 15000)
     return () => clearInterval(id)
   }, [refresh])
+
+  // --- realtime --------------------------------------------------------------
+  const presenceRef = useRef<PresenceUser[]>([])
+
+  const handleSync = useCallback(
+    (event: BoardSyncEvent) => {
+      const nameFor = (userId: string) =>
+        presenceRef.current.find((p) => p.userId === userId)?.name ?? null
+
+      const normalize = (raw: Record<string, unknown>): CanvasEl => {
+        const el = raw as unknown as CanvasEl
+        return { ...el, authorName: el.authorName ?? nameFor(el.userId) }
+      }
+
+      switch (event.type) {
+        case 'element:created': {
+          const el = normalize(event.element)
+          setElements((prev) =>
+            prev.some((x) => x.id === el.id)
+              ? prev.map((x) => (x.id === el.id ? el : x))
+              : [...prev, el],
+          )
+          break
+        }
+        case 'element:updated': {
+          const el = normalize(event.element)
+          const drag = dragRef.current
+          // Don't clobber an element the local user is actively manipulating.
+          if (drag && drag.mode !== 'pan' && drag.id === el.id) break
+          if (editingId === el.id) break
+          setElements((prev) =>
+            prev.map((x) =>
+              x.id === el.id
+                ? { ...el, authorName: x.authorName ?? el.authorName }
+                : x,
+            ),
+          )
+          break
+        }
+        case 'element:deleted': {
+          setElements((prev) => prev.filter((x) => x.id !== event.id))
+          break
+        }
+        default:
+          break
+      }
+    },
+    [editingId],
+  )
+
+  const { presence, cursors, selections, activity, sendCursor, sendSelection } =
+    useBoardRealtime({
+      teamId,
+      board: 'retro',
+      name: user?.name ?? 'Guest',
+      enabled: !!user,
+      onSync: handleSync,
+    })
+  presenceRef.current = presence
+
+  // Broadcast the local selection/editing focus to other viewers.
+  useEffect(() => {
+    sendSelection(selectedId, editingId !== null)
+  }, [selectedId, editingId, sendSelection])
+
+  const onContainerPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      const node = containerRef.current
+      if (!node) return
+      const rect = node.getBoundingClientRect()
+      const v = vpRef.current
+      sendCursor(
+        (e.clientX - rect.left - v.panX) / v.zoom,
+        (e.clientY - rect.top - v.panY) / v.zoom,
+      )
+    },
+    [sendCursor],
+  )
 
   // --- coordinate helpers ----------------------------------------------------
   const toWorld = useCallback((clientX: number, clientY: number) => {
@@ -506,6 +590,12 @@ export function RetroCanvas({ teamId, initialElements, members }: Props) {
   const resetView = () => setVp({ panX: 0, panY: 0, zoom: 1 })
 
   const selected = elements.find((e) => e.id === selectedId) ?? null
+  // Until the socket reports presence, show the static roster so the bar isn't empty.
+  const fallbackPresence: PresenceUser[] = members.map((m) => ({
+    userId: m.userId,
+    name: m.name ?? 'User',
+    board: null,
+  }))
   const cursorClass =
     tool === 'hand'
       ? 'cursor-grab'
@@ -517,6 +607,7 @@ export function RetroCanvas({ teamId, initialElements, members }: Props) {
     <div
       ref={containerRef}
       onPointerDown={onBackgroundPointerDown}
+      onPointerMove={onContainerPointerMove}
       className={cn(
         'relative h-full w-full touch-none overflow-hidden bg-[#f1f3f5] select-none',
         cursorClass,
@@ -614,7 +705,44 @@ export function RetroCanvas({ teamId, initialElements, members }: Props) {
               onVote={handleVote}
             />
           ))}
+
+        {Object.values(selections).map((s) => {
+          if (s.elementId == null) return null
+          const el = elements.find((e) => e.id === s.elementId)
+          if (!el || el.type === 'line') return null
+          const color = userColor(s.userId)
+          return (
+            <div
+              key={s.socketId}
+              className="pointer-events-none absolute rounded-lg"
+              style={{
+                left: el.x,
+                top: el.y,
+                width: el.w,
+                height: el.h,
+                border: `2px solid ${color}`,
+              }}
+            >
+              <span
+                className="absolute -top-5 left-0 whitespace-nowrap rounded px-1 text-[10px] font-semibold text-white"
+                style={{ backgroundColor: color }}
+              >
+                {s.name}
+                {s.editing ? ' (editing)' : ''}
+              </span>
+            </div>
+          )
+        })}
       </div>
+
+      <RemoteCursors
+        cursors={cursors}
+        currentUserId={currentUserId}
+        project={(c) => ({
+          left: c.x * vp.zoom + vp.panX,
+          top: c.y * vp.zoom + vp.panY,
+        })}
+      />
 
       {selected &&
         editingId === null &&
@@ -635,21 +763,12 @@ export function RetroCanvas({ teamId, initialElements, members }: Props) {
           )
         })()}
 
-      <div className="absolute right-5 top-4 z-30 flex items-center -space-x-2">
-        {members.slice(0, 6).map((m) => (
-          <span
-            key={m.userId}
-            title={m.name ?? 'User'}
-            className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-card bg-primary text-[10px] font-bold text-primary-foreground shadow-sm"
-          >
-            {initials(m.name || 'User')}
-          </span>
-        ))}
-        {members.length > 6 && (
-          <span className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-card bg-muted text-[10px] font-bold text-muted-foreground">
-            +{members.length - 6}
-          </span>
-        )}
+      <div className="absolute right-5 top-4 z-30 flex items-center gap-3">
+        <PresenceBar
+          users={presence.length > 0 ? presence : fallbackPresence}
+          currentUserId={currentUserId}
+        />
+        <ActivityFeed entries={activity} currentUserId={currentUserId} />
       </div>
 
       <CanvasToolbar

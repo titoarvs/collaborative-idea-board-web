@@ -13,10 +13,16 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 
+interface RemoteHighlight {
+  color: string
+  name: string
+}
+
 interface IdeaCardProps {
   idea: Idea
   onOpen?: (idea: Idea) => void
   dragHandleProps?: Record<string, unknown>
+  highlight?: RemoteHighlight | null
 }
 
 const statuses = ['backlog', 'in-progress', 'in-review', 'done']
@@ -27,7 +33,12 @@ const statusLabels: Record<string, string> = {
   done: 'Done',
 }
 
-export function IdeaCard({ idea, onOpen, dragHandleProps }: IdeaCardProps) {
+export function IdeaCard({
+  idea,
+  onOpen,
+  dragHandleProps,
+  highlight,
+}: IdeaCardProps) {
   const [isUpdating, setIsUpdating] = useState(false)
   const qc = useQueryClient()
   const currentIndex = statuses.indexOf(idea.status)
@@ -75,8 +86,21 @@ export function IdeaCard({ idea, onOpen, dragHandleProps }: IdeaCardProps) {
   return (
     <div
       onClick={() => onOpen?.(idea)}
-      className="group cursor-pointer rounded-lg border border-border bg-card p-3.5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
+      className="group relative cursor-pointer rounded-lg border border-border bg-card p-3.5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
+      style={
+        highlight
+          ? { outline: `2px solid ${highlight.color}`, outlineOffset: '1px' }
+          : undefined
+      }
     >
+      {highlight && (
+        <span
+          className="absolute -top-2 right-2 z-10 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-semibold text-white shadow-sm"
+          style={{ backgroundColor: highlight.color }}
+        >
+          {highlight.name}
+        </span>
+      )}
       <div className="space-y-2.5">
         <div className="flex items-start justify-between gap-2">
           <h4 className="line-clamp-2 text-sm font-semibold text-foreground">
@@ -175,9 +199,11 @@ export function IdeaCard({ idea, onOpen, dragHandleProps }: IdeaCardProps) {
 export function SortableIdeaCard({
   idea,
   onOpen,
+  highlight,
 }: {
   idea: Idea
   onOpen: (idea: Idea) => void
+  highlight?: RemoteHighlight | null
 }) {
   const {
     attributes,
@@ -200,6 +226,7 @@ export function SortableIdeaCard({
         idea={idea}
         onOpen={onOpen}
         dragHandleProps={{ ...attributes, ...listeners }}
+        highlight={highlight}
       />
     </div>
   )

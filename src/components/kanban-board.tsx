@@ -18,7 +18,14 @@ import {
 } from '@dnd-kit/sortable'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { useAuth } from '@/lib/auth'
 import type { Idea } from '@/lib/types'
+import { useBoardRealtime } from '@/lib/realtime/use-board-realtime'
+import type { BoardSyncEvent } from '@/lib/realtime/types'
+import { userColor } from '@/lib/realtime/colors'
+import { PresenceBar } from '@/components/realtime/presence-bar'
+import { RemoteCursors } from '@/components/realtime/remote-cursors'
+import { ActivityFeed } from '@/components/realtime/activity-feed'
 import { SortableIdeaCard, IdeaCard } from './idea-card'
 import { NewIdeaForm } from './new-idea-form'
 import { TicketPanel } from './ticket-panel'
@@ -45,11 +52,13 @@ function Column({
   ideas,
   onNew,
   onOpen,
+  highlights,
 }: {
   status: string
   ideas: Idea[]
   onNew: () => void
   onOpen: (idea: Idea) => void
+  highlights: Record<number, { color: string; name: string }>
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status })
 
@@ -85,7 +94,12 @@ function Column({
           strategy={verticalListSortingStrategy}
         >
           {ideas.map((idea) => (
-            <SortableIdeaCard key={idea.id} idea={idea} onOpen={onOpen} />
+            <SortableIdeaCard
+              key={idea.id}
+              idea={idea}
+              onOpen={onOpen}
+              highlight={highlights[idea.id] ?? null}
+            />
           ))}
         </SortableContext>
         {ideas.length === 0 && (
@@ -100,16 +114,22 @@ function Column({
 
 export function KanbanBoard({ teamId }: { teamId: number }) {
   const qc = useQueryClient()
+  const { user } = useAuth()
+  const currentUserId = user?.id
   const [ideas, setIdeas] = useState<Idea[]>([])
   const [showNewForm, setShowNewForm] = useState(false)
   const [activeId, setActiveId] = useState<number | null>(null)
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const suppressUntil = useRef(0)
+  const activeIdRef = useRef<number | null>(null)
+  activeIdRef.current = activeId
+  const boardRef = useRef<HTMLDivElement | null>(null)
 
   const { data } = useQuery({
     queryKey: ['ideas', teamId],
     queryFn: () => api.get<Idea[]>(`/teams/${teamId}/ideas`),
-    refetchInterval: 3500,
+    // Realtime is primary; slow poll is a reconnect/safety net.
+    refetchInterval: 15000,
   })
 
   // Sync server data into local state, but not while dragging or right after a
@@ -119,6 +139,79 @@ export function KanbanBoard({ teamId }: { teamId: number }) {
     if (activeId !== null || Date.now() < suppressUntil.current) return
     setIdeas(data)
   }, [data, activeId])
+
+  // --- realtime --------------------------------------------------------------
+  const handleSync = useCallback(
+    (event: BoardSyncEvent) => {
+      const upsert = (raw: Record<string, unknown>) => {
+        const idea = raw as unknown as Idea
+        setIdeas((prev) =>
+          prev.some((x) => x.id === idea.id)
+            ? prev.map((x) => (x.id === idea.id ? idea : x))
+            : [...prev, idea],
+        )
+      }
+      switch (event.type) {
+        case 'idea:created':
+          upsert(event.idea)
+          break
+        case 'idea:updated': {
+          const idea = event.idea as unknown as Idea
+          // Don't clobber a card the local user is currently dragging.
+          if (activeIdRef.current === idea.id) break
+          upsert(event.idea)
+          break
+        }
+        case 'idea:deleted':
+          setIdeas((prev) => prev.filter((x) => x.id !== event.id))
+          break
+        case 'comment:created':
+        case 'comment:deleted':
+          void qc.invalidateQueries({ queryKey: ['comments', event.ideaId] })
+          break
+        default:
+          break
+      }
+    },
+    [qc],
+  )
+
+  const { presence, cursors, selections, activity, sendCursor, sendSelection } =
+    useBoardRealtime({
+      teamId,
+      board: 'kanban',
+      name: user?.name ?? 'Guest',
+      enabled: !!user,
+      onSync: handleSync,
+    })
+
+  // Broadcast which card the local user is focused on (open ticket or dragging).
+  useEffect(() => {
+    sendSelection(selectedId ?? activeId, false)
+  }, [selectedId, activeId, sendSelection])
+
+  const onBoardPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      const node = boardRef.current
+      if (!node) return
+      const rect = node.getBoundingClientRect()
+      if (rect.width === 0 || rect.height === 0) return
+      sendCursor(
+        (e.clientX - rect.left) / rect.width,
+        (e.clientY - rect.top) / rect.height,
+      )
+    },
+    [sendCursor],
+  )
+
+  const highlights = useMemo(() => {
+    const map: Record<number, { color: string; name: string }> = {}
+    for (const s of Object.values(selections)) {
+      if (s.elementId == null) continue
+      map[s.elementId] = { color: userColor(s.userId), name: s.name }
+    }
+    return map
+  }, [selections])
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -254,10 +347,14 @@ export function KanbanBoard({ teamId }: { teamId: number }) {
             List
           </span>
         </div>
-        <Button onClick={() => setShowNewForm(!showNewForm)}>
-          <Plus className="h-4 w-4" />
-          New Idea
-        </Button>
+        <div className="flex items-center gap-3">
+          <PresenceBar users={presence} currentUserId={currentUserId} />
+          <ActivityFeed entries={activity} currentUserId={currentUserId} />
+          <Button onClick={() => setShowNewForm(!showNewForm)}>
+            <Plus className="h-4 w-4" />
+            New Idea
+          </Button>
+        </div>
       </div>
 
       {showNewForm && (
@@ -279,16 +376,28 @@ export function KanbanBoard({ teamId }: { teamId: number }) {
         onDragOver={handleDragOver}
         onDragEnd={handleDragEnd}
       >
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {STATUSES.map((status) => (
-            <Column
-              key={status}
-              status={status}
-              ideas={columns[status]}
-              onNew={() => setShowNewForm(true)}
-              onOpen={(idea) => setSelectedId(idea.id)}
-            />
-          ))}
+        <div ref={boardRef} onPointerMove={onBoardPointerMove} className="relative">
+          <RemoteCursors
+            cursors={cursors}
+            currentUserId={currentUserId}
+            project={(c) => {
+              const node = boardRef.current
+              if (!node) return null
+              return { left: c.x * node.clientWidth, top: c.y * node.clientHeight }
+            }}
+          />
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {STATUSES.map((status) => (
+              <Column
+                key={status}
+                status={status}
+                ideas={columns[status]}
+                onNew={() => setShowNewForm(true)}
+                onOpen={(idea) => setSelectedId(idea.id)}
+                highlights={highlights}
+              />
+            ))}
+          </div>
         </div>
         <DragOverlay>
           {activeIdea ? (
