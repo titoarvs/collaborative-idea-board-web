@@ -1,4 +1,8 @@
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:4000'
+// Trailing slash is stripped so `${API_URL}${path}` can't produce `//teams`.
+const API_URL = (import.meta.env.VITE_API_URL ?? 'http://localhost:4000').replace(
+  /\/+$/,
+  '',
+)
 
 export class ApiError extends Error {
   status: number
