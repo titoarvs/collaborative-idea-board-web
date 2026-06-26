@@ -1,11 +1,19 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 
+export type PlatformRole = 'system_admin' | 'user'
+
 export interface AuthUser {
   id: string
   name: string
   email: string
   image: string | null
+  /** Platform-level role. Absent values are treated as a regular user. */
+  role?: PlatformRole
+}
+
+export function isSystemAdmin(user: AuthUser | null | undefined): boolean {
+  return user?.role === 'system_admin'
 }
 
 interface MeResponse {

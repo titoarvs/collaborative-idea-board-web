@@ -1,14 +1,18 @@
 import { useState } from 'react'
 import { Link, useRouterState } from '@tanstack/react-router'
 import { Button } from '@/components/ui/button'
-import { Copy, Check, LayoutGrid, MessagesSquare } from 'lucide-react'
+import { Copy, Check, LayoutGrid, MessagesSquare, Lock } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import type { Organization } from '@/lib/types'
+import { useEntitlements } from '@/lib/billing/entitlements'
+import { useUpgradeModal } from './billing/upgrade-modal'
 
 interface TeamHeaderProps {
   teamId: number
   teamName: string
   inviteCode: string
   userName: string
+  org: Organization | null
 }
 
 function initials(value: string) {
@@ -22,10 +26,13 @@ export function TeamHeader({
   teamName,
   inviteCode,
   userName,
+  org,
 }: TeamHeaderProps) {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const [copied, setCopied] = useState(false)
   const isRetro = pathname.endsWith('/retro')
+  const ent = useEntitlements(org)
+  const upgrade = useUpgradeModal()
 
   const copyInviteLink = async () => {
     const inviteLink = `${window.location.origin}/join/${inviteCode}`
@@ -58,14 +65,26 @@ export function TeamHeader({
               <LayoutGrid className="h-3.5 w-3.5" />
               Board
             </Link>
-            <Link
-              to="/team/$teamId/retro"
-              params={{ teamId: String(teamId) }}
-              className={tabClass(isRetro)}
-            >
-              <MessagesSquare className="h-3.5 w-3.5" />
-              Retro
-            </Link>
+            {ent.retroEnabled ? (
+              <Link
+                to="/team/$teamId/retro"
+                params={{ teamId: String(teamId) }}
+                className={tabClass(isRetro)}
+              >
+                <MessagesSquare className="h-3.5 w-3.5" />
+                Retro
+              </Link>
+            ) : (
+              <button
+                type="button"
+                onClick={() => upgrade.open('PLAN_REQUIRED')}
+                className={cn(tabClass(false), 'cursor-pointer')}
+                title="Retro is a Pro feature"
+              >
+                <Lock className="h-3.5 w-3.5" />
+                Retro
+              </button>
+            )}
           </nav>
         </div>
 

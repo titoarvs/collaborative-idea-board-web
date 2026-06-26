@@ -4,13 +4,47 @@ const API_URL = (import.meta.env.VITE_API_URL ?? 'http://localhost:4000').replac
   '',
 )
 
+/** Machine-readable reasons the backend uses to signal plan/quota limits. */
+export type PlanErrorCode = 'BOARD_LIMIT' | 'PLAN_REQUIRED' | 'TRIAL_EXPIRED'
+
+const PLAN_ERROR_CODES: readonly PlanErrorCode[] = [
+  'BOARD_LIMIT',
+  'PLAN_REQUIRED',
+  'TRIAL_EXPIRED',
+]
+
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  /** Set when the backend returns a `{ code }` describing a plan limit. */
+  code?: PlanErrorCode
+  constructor(status: number, message: string, code?: PlanErrorCode) {
     super(message)
     this.status = status
+    this.code = code
     this.name = 'ApiError'
   }
+
+  /** True when this error is a billing/plan gate the user can resolve by upgrading. */
+  get isPlanLimit(): boolean {
+    return (
+      this.code !== undefined ||
+      this.status === 402 ||
+      (this.status === 403 && this.code !== undefined)
+    )
+  }
+}
+
+function readPlanCode(data: unknown): PlanErrorCode | undefined {
+  if (data && typeof data === 'object' && 'code' in data) {
+    const code = (data as { code: unknown }).code
+    if (
+      typeof code === 'string' &&
+      (PLAN_ERROR_CODES as readonly string[]).includes(code)
+    ) {
+      return code as PlanErrorCode
+    }
+  }
+  return undefined
 }
 
 type Json = Record<string, unknown> | unknown[] | null
@@ -81,7 +115,7 @@ export async function apiFetch<T = unknown>(
           ? ((data as { message: string[] }).message.join(', '))
           : String((data as { message: unknown }).message)
         : null) ?? res.statusText
-    throw new ApiError(res.status, message)
+    throw new ApiError(res.status, message, readPlanCode(data))
   }
 
   return data as T
@@ -91,6 +125,8 @@ export const api = {
   get: <T = unknown>(path: string) => apiFetch<T>(path),
   post: <T = unknown>(path: string, body?: Json) =>
     apiFetch<T>(path, { method: 'POST', body }),
+  put: <T = unknown>(path: string, body?: Json) =>
+    apiFetch<T>(path, { method: 'PUT', body }),
   patch: <T = unknown>(path: string, body?: Json) =>
     apiFetch<T>(path, { method: 'PATCH', body }),
   delete: <T = unknown>(path: string) =>

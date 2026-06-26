@@ -8,6 +8,8 @@ import {
 } from '@tanstack/react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
+import { ActiveOrgProvider } from '@/lib/org/active-org'
+import { UpgradeModalProvider } from '@/components/billing/upgrade-modal'
 import appCss from '@/styles/app.css?url'
 
 export const Route = createRootRoute({
@@ -38,7 +40,11 @@ function RootComponent() {
   return (
     <RootDocument>
       <QueryClientProvider client={queryClient}>
-        <Outlet />
+        <ActiveOrgProvider>
+          <UpgradeModalProvider>
+            <Outlet />
+          </UpgradeModalProvider>
+        </ActiveOrgProvider>
       </QueryClientProvider>
     </RootDocument>
   )

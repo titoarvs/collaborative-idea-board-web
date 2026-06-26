@@ -1,34 +1,54 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { api } from '@/lib/api'
+import { api, ApiError } from '@/lib/api'
 import type { Team } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { X } from 'lucide-react'
+import { useUpgradeModal } from './billing/upgrade-modal'
 
 interface CreateTeamModalProps {
+  organizationId: number
   onClose: () => void
   onTeamCreated: (team: Team) => void
 }
 
-export function CreateTeamModal({ onClose, onTeamCreated }: CreateTeamModalProps) {
+export function CreateTeamModal({
+  organizationId,
+  onClose,
+  onTeamCreated,
+}: CreateTeamModalProps) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
+  const [error, setError] = useState('')
   const qc = useQueryClient()
+  const upgrade = useUpgradeModal()
 
   const mutation = useMutation({
     mutationFn: (input: { name: string; description?: string }) =>
-      api.post<Team>('/teams', input),
+      api.post<Team>(`/organizations/${organizationId}/teams`, input),
     onSuccess: (team) => {
-      void qc.invalidateQueries({ queryKey: ['teams'] })
+      void qc.invalidateQueries({ queryKey: ['teams', organizationId] })
+      void qc.invalidateQueries({ queryKey: ['organizations'] })
       onTeamCreated(team)
+    },
+    onError: (err) => {
+      // Backend is the source of truth: if the board limit is hit server-side,
+      // close this modal and surface the upgrade prompt instead.
+      if (err instanceof ApiError && err.isPlanLimit) {
+        onClose()
+        upgrade.open(err.code ?? 'BOARD_LIMIT')
+        return
+      }
+      setError(err instanceof ApiError ? err.message : 'Failed to create board')
     },
   })
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!name.trim()) return
+    setError('')
     mutation.mutate({ name, description: description || undefined })
   }
 
@@ -36,7 +56,7 @@ export function CreateTeamModal({ onClose, onTeamCreated }: CreateTeamModalProps
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <div className="bg-card border border-border rounded-lg p-6 max-w-md w-full space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-2xl font-bold text-foreground">Create Team</h2>
+          <h2 className="text-2xl font-bold text-foreground">Create Board</h2>
           <Button size="sm" variant="ghost" onClick={onClose} className="h-7">
             <X className="w-4 h-4" />
           </Button>
@@ -45,7 +65,7 @@ export function CreateTeamModal({ onClose, onTeamCreated }: CreateTeamModalProps
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="text-sm font-medium text-foreground mb-1 block">
-              Team Name
+              Board Name
             </label>
             <Input
               placeholder="e.g., Product Team"
@@ -66,6 +86,12 @@ export function CreateTeamModal({ onClose, onTeamCreated }: CreateTeamModalProps
               className="resize-none h-20"
             />
           </div>
+
+          {error && (
+            <div className="rounded border border-destructive/30 bg-destructive/10 p-3">
+              <p className="text-sm text-destructive">{error}</p>
+            </div>
+          )}
 
           <div className="flex gap-2 justify-end pt-2">
             <Button type="button" variant="outline" onClick={onClose}>

@@ -1,8 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
-import { api } from '@/lib/api'
-import type { Team } from '@/lib/types'
 import { useRequireAuth } from '@/lib/use-require-auth'
+import { useActiveOrg } from '@/lib/org/active-org'
+import { useOrgTeams } from '@/lib/org/use-organizations'
 import { AppShell } from '@/components/app-shell'
 import { DashboardContent } from '@/components/dashboard-content'
 
@@ -12,11 +11,8 @@ export const Route = createFileRoute('/dashboard')({
 
 function DashboardPage() {
   const { user } = useRequireAuth()
-  const teamsQuery = useQuery({
-    queryKey: ['teams'],
-    queryFn: () => api.get<Team[]>('/teams'),
-    enabled: !!user,
-  })
+  const { activeOrg, activeOrgId } = useActiveOrg()
+  const teamsQuery = useOrgTeams(activeOrgId)
 
   if (!user) {
     return (
@@ -30,7 +26,7 @@ function DashboardPage() {
 
   return (
     <AppShell user={user} teams={teams}>
-      <DashboardContent user={user} teams={teams} />
+      <DashboardContent user={user} teams={teams} org={activeOrg} />
     </AppShell>
   )
 }
